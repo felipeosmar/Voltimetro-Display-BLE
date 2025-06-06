@@ -1,0 +1,13 @@
+# Requisitos Python para o projeto Display 7 Segmentos com Bluetooth
+
+# Para instalação e programação dos ESP32
+esptool>=4.0.0
+
+# Para comunicação BLE com computador
+bleak>=0.20.0
+
+# Para carregar arquivos no ESP32 (alternativa ao Thonny)
+adafruit-ampy>=1.1.0
+
+# Opcional: para desenvolvimento e debug
+pyserial>=3.5
