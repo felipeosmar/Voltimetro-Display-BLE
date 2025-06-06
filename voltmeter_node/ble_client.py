@@ -3,7 +3,7 @@ import time
 import sys
 sys.path.append('/common')
 from constants import *
-from ble_utils import BLEUtils, print_debug, _IRQ_PERIPHERAL_CONNECT, _IRQ_PERIPHERAL_DISCONNECT, _IRQ_GATTC_SERVICE_RESULT, _IRQ_GATTC_SERVICE_DONE, _IRQ_GATTC_CHARACTERISTIC_RESULT, _IRQ_GATTC_CHARACTERISTIC_DONE, _IRQ_GATTC_WRITE_DONE, _IRQ_SCAN_RESULT, _IRQ_SCAN_DONE
+from ble_utils import BLEUtils, print_debug, _IRQ_PERIPHERAL_CONNECT, _IRQ_PERIPHERAL_DISCONNECT, _IRQ_GATTC_SERVICE_RESULT, _IRQ_GATTC_SERVICE_DONE, _IRQ_GATTC_CHARACTERISTIC_RESULT, _IRQ_GATTC_CHARACTERISTIC_DONE, _IRQ_GATTC_WRITE_DONE, _IRQ_SCAN_RESULT, _IRQ_SCAN_DONE, _IRQ_CENTRAL_CONNECT, _IRQ_CENTRAL_DISCONNECT
 
 class BLEVoltmeterClient:
     def __init__(self, adc_reader):
@@ -213,23 +213,67 @@ class BLEVoltmeterClient:
         }
 
 class BLEVoltmeterServer:
-    def __init__(self, adc_reader):
+    def __init__(self, adc_reader, ble_instance=None):
         """Servidor BLE do voltímetro para conexões de computador"""
         self.adc_reader = adc_reader
-        self.ble = bluetooth.BLE()
-        self.ble.active(True)
-        self.ble.irq(self._irq_handler)
+        
+        # Usa instância BLE compartilhada ou cria nova
+        if ble_instance:
+            self.ble = ble_instance
+            self.shared_ble = True
+        else:
+            self.ble = bluetooth.BLE()
+            self.ble.active(True)
+            self.shared_ble = False
+        
+        # Adiciona handler para eventos de servidor
+        if hasattr(self.ble, '_original_irq_handler'):
+            self.original_handler = self.ble._original_irq_handler
+        else:
+            self.original_handler = None
+            
+        self.ble._original_irq_handler = self.ble._irq_handler if hasattr(self.ble, '_irq_handler') else None
+        self.ble.irq(self._combined_irq_handler)
         
         # Conexões ativas
         self.connections = set()
+        self.server_enabled = False
         
-        # Configura serviços
-        self._setup_services()
+        try:
+            # Configura serviços
+            self._setup_services()
+            
+            # Marca como habilitado
+            self.server_enabled = True
+            
+            print_debug("Servidor BLE do Voltímetro inicializado")
+        except Exception as e:
+            print_debug(f"Erro ao configurar servidor BLE: {e}")
+            self.server_enabled = False
+    
+    def _combined_irq_handler(self, event, data):
+        """Handler combinado para eventos BLE do cliente e servidor"""
+        # Primeiro, chama o handler original se existir
+        if self.original_handler:
+            try:
+                self.original_handler(event, data)
+            except:
+                pass
         
-        # Inicia advertising
-        self._start_advertising()
+        # Depois processa eventos do servidor
+        self._server_irq_handler(event, data)
+    
+    def _server_irq_handler(self, event, data):
+        """Manipula eventos BLE do servidor"""
+        if event == _IRQ_CENTRAL_CONNECT:
+            conn_handle, addr_type, addr = data
+            self.connections.add(conn_handle)
+            print_debug(f"Cliente conectado ao servidor voltímetro: {conn_handle}")
         
-        print_debug("Servidor BLE do Voltímetro inicializado")
+        elif event == _IRQ_CENTRAL_DISCONNECT:
+            conn_handle, addr_type, addr = data
+            self.connections.discard(conn_handle)
+            print_debug(f"Cliente desconectado do servidor voltímetro: {conn_handle}")
     
     def _setup_services(self):
         """Configura os serviços BLE"""
@@ -249,36 +293,41 @@ class BLEVoltmeterServer:
         
         print_debug("Serviços BLE do voltímetro registrados")
     
-    def _start_advertising(self):
+    def start_advertising(self):
         """Inicia advertising BLE"""
-        payload = BLEUtils.advertising_payload(
-            name=BLE_NAME_VOLTMETER,
-            services=[VOLTMETER_SERVICE_UUID]
-        )
-        
-        self.ble.gap_advertise(100, payload)
-        print_debug(f"Advertising iniciado como '{BLE_NAME_VOLTMETER}'")
+        if not self.server_enabled:
+            return False
+            
+        try:
+            payload = BLEUtils.advertising_payload(
+                name=BLE_NAME_VOLTMETER,
+                services=[VOLTMETER_SERVICE_UUID]
+            )
+            
+            self.ble.gap_advertise(100, payload)
+            print_debug(f"Advertising iniciado como '{BLE_NAME_VOLTMETER}'")
+            return True
+        except Exception as e:
+            print_debug(f"Erro ao iniciar advertising: {e}")
+            return False
     
-    def _irq_handler(self, event, data):
-        """Manipula eventos BLE"""
-        if event == _IRQ_CENTRAL_CONNECT:
-            conn_handle, addr_type, addr = data
-            self.connections.add(conn_handle)
-            print_debug(f"Cliente conectado ao voltímetro: {conn_handle}")
-            
-            if len(self.connections) < MAX_CONNECTIONS:
-                self._start_advertising()
-        
-        elif event == _IRQ_CENTRAL_DISCONNECT:
-            conn_handle, addr_type, addr = data
-            self.connections.discard(conn_handle)
-            print_debug(f"Cliente desconectado do voltímetro: {conn_handle}")
-            
-            if len(self.connections) < MAX_CONNECTIONS:
-                self._start_advertising()
+    def stop_advertising(self):
+        """Para advertising BLE"""
+        try:
+            self.ble.gap_advertise(None)
+            print_debug("Advertising parado")
+        except Exception as e:
+            print_debug(f"Erro ao parar advertising: {e}")
+    
+    def _start_advertising(self):
+        """Inicia advertising BLE (método legado)"""
+        self.start_advertising()
     
     def update_voltage_data(self):
         """Atualiza dados de tensão e notifica clientes"""
+        if not self.server_enabled or not self.adc_reader:
+            return
+            
         try:
             voltages = self.adc_reader.read_all_voltages()
             data = BLEUtils.encode_voltage_data(voltages)
@@ -294,8 +343,8 @@ class BLEVoltmeterServer:
                     self.connections.discard(conn_handle)
         
         except Exception as e:
-            print_debug(f"Erro ao atualizar dados de tensão: {e}")
+            print_debug(f"Erro ao atualizar dados do servidor: {e}")
     
     def get_connection_count(self):
         """Retorna número de conexões ativas"""
-        return len(self.connections)
+        return len(self.connections) if self.server_enabled else 0

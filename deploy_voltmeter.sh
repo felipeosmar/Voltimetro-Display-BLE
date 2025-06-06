@@ -27,5 +27,6 @@ echo "3. Copiando arquivos do voltímetro..."
 ampy --port $PORT put voltmeter_node/adc_reader.py /adc_reader.py
 ampy --port $PORT put voltmeter_node/ble_client.py /ble_client.py
 ampy --port $PORT put voltmeter_node/main.py /main.py
+ampy --port $PORT put voltmeter_node/ble_voltmeter_server.py /ble_voltmeter_server.py
 
 echo "✓ Código do Voltímetro carregado! Reinicie o ESP32."

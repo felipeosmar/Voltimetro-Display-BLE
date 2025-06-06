@@ -1,26 +1,31 @@
 """
-Nó Voltímetro - ESP32 com 3 canais ADC
-Lê tensões e transmite via BLE para o nó Display
-Também funciona como servidor BLE para conexões de computador
+Nó Voltímetro - ESP32 com leitura de 3 canais ADC
+Envia dados via BLE para o nó Display
 """
 
 import time
 import sys
 import gc
-from machine import Pin, Timer
+from machine import Pin
 
 # Adiciona o diretório comum ao path
 sys.path.append('/common')
 
 # Importações locais
 from adc_reader import ADCReader
-from ble_client import BLEVoltmeterClient, BLEVoltmeterServer
+from ble_voltmeter_server import BLEVoltmeterServer
 from ble_utils import print_debug
 
 class VoltmeterNode:
     def __init__(self):
         """Inicializa o nó voltímetro"""
         print_debug("Inicializando nó Voltímetro...")
+        
+        # Estado do nó
+        self.running = False
+        self.last_measurement = time.time()
+        self.last_heartbeat = time.time()
+        self.ble_server = None
         
         # LED indicador de status
         self.status_led = Pin(2, Pin.OUT)
@@ -33,132 +38,73 @@ class VoltmeterNode:
             self.status_led.value(1)  # LED aceso = ADC OK
         except Exception as e:
             print_debug(f"Erro ao inicializar ADC: {e}")
+            self.status_led.value(0)
             return
         
-        # Inicializa o cliente BLE (para conectar ao display)
-        try:
-            self.ble_client = BLEVoltmeterClient(self.adc_reader)
-            print_debug("Cliente BLE inicializado")
-        except Exception as e:
-            print_debug(f"Erro ao inicializar cliente BLE: {e}")
-            return
-        
-        # Inicializa o servidor BLE (para conexões de computador)
+        # Inicializa o servidor BLE (para ser descoberto pelo PC e Display)
         try:
             self.ble_server = BLEVoltmeterServer(self.adc_reader)
             print_debug("Servidor BLE inicializado")
         except Exception as e:
             print_debug(f"Erro ao inicializar servidor BLE: {e}")
-            return
-        
-        # Estado do nó
-        self.running = True
-        self.last_heartbeat = time.time()
-        self.last_scan_attempt = 0
-        self.scan_interval = 30  # Tenta reconectar a cada 30 segundos
-        self.last_server_update = 0
-        self.server_update_interval = 2  # Atualiza servidor a cada 2 segundos
-        
-        # Timer para leituras periódicas
-        self.reading_timer = Timer(0)
-        self.reading_timer.init(period=500, mode=Timer.PERIODIC, callback=self._timer_callback)
+            self.ble_server = None
         
         print_debug("Nó Voltímetro inicializado com sucesso!")
+        self.running = True
         
-        # Teste inicial
+        # Teste inicial dos ADCs
         self.initial_test()
         
-        # Inicia busca pelo display
-        self.start_display_search()
+        print_debug("Nó Voltímetro pronto - dados disponíveis via BLE")
     
     def initial_test(self):
-        """Executa teste inicial do ADC"""
+        """Executa teste inicial dos canais ADC"""
+        if not self.adc_reader:
+            print_debug("ADC reader não disponível para teste")
+            return
+            
         print_debug("Executando teste inicial do ADC...")
         
-        # Testa os canais ADC
-        self.adc_reader.test_channels()
-        
-        # Lê tensões algumas vezes
-        for i in range(5):
-            voltages = self.adc_reader.read_all_voltages()
-            print_debug(f"Teste {i+1}: {voltages}")
-            time.sleep(0.5)
-        
-        print_debug("Teste inicial concluído")
-    
-    def start_display_search(self):
-        """Inicia busca pelo nó display"""
-        print_debug("Iniciando busca pelo nó Display...")
-        self.ble_client.start_scan(10000)  # Scan por 10 segundos
-        self.last_scan_attempt = time.time()
-    
-    def _timer_callback(self, timer):
-        """Callback do timer para leituras periódicas"""
         try:
-            # Auto-envio de tensões para o display
-            if self.ble_client.is_connected():
-                self.ble_client.auto_send_voltages()
+            # Testa cada canal individualmente
+            self.adc_reader.test_channels()
+            
+            # Faz algumas leituras de teste
+            for i in range(5):
+                voltages = self.adc_reader.read_all_voltages()
+                print_debug(f"Teste {i+1}: {voltages}")
+                time.sleep(0.5)
+            
+            print_debug("Teste inicial concluído")
+            
         except Exception as e:
-            print_debug(f"Erro no timer callback: {e}")
+            print_debug(f"Erro no teste inicial: {e}")
     
     def heartbeat(self):
-        """Pisca LED de status para indicar funcionamento"""
+        """Pisca LED de status para indicar que o sistema está funcionando"""
         current_time = time.time()
-        if current_time - self.last_heartbeat >= 1:  # Pisca a cada 1 segundo
-            # LED pisca mais rápido se conectado ao display
-            if self.ble_client.is_connected():
-                self.status_led.value(not self.status_led.value())
-            else:
-                # Pisca mais devagar se não conectado
-                if int(current_time) % 2 == 0:
-                    self.status_led.value(1)
-                else:
-                    self.status_led.value(0)
-            
+        if current_time - self.last_heartbeat >= 2:  # Pisca a cada 2 segundos
+            self.status_led.value(not self.status_led.value())
             self.last_heartbeat = current_time
-    
-    def manage_display_connection(self):
-        """Gerencia conexão com o display"""
-        current_time = time.time()
-        
-        # Se não está conectado e passou o intervalo, tenta reconectar
-        if not self.ble_client.is_connected():
-            if current_time - self.last_scan_attempt >= self.scan_interval:
-                if not self.ble_client.scanning:
-                    print_debug("Tentando reconectar ao display...")
-                    
-                    # Tenta conectar com resultados do scan anterior
-                    if not self.ble_client.connect_to_display():
-                        # Se não conseguiu, inicia novo scan
-                        self.ble_client.start_scan(5000)
-                    
-                    self.last_scan_attempt = current_time
-    
-    def update_server_data(self):
-        """Atualiza dados do servidor BLE"""
-        current_time = time.time()
-        
-        if current_time - self.last_server_update >= self.server_update_interval:
-            try:
-                self.ble_server.update_voltage_data()
-                self.last_server_update = current_time
-            except Exception as e:
-                print_debug(f"Erro ao atualizar servidor: {e}")
     
     def status_info(self):
         """Exibe informações de status periodicamente"""
-        voltages = self.adc_reader.get_last_readings()
-        client_connected = self.ble_client.is_connected()
-        server_connections = self.ble_server.get_connection_count()
-        
-        print_debug(f"Status - Tensões: {voltages}")
-        print_debug(f"Status - Display conectado: {client_connected}, Clientes PC: {server_connections}")
+        try:
+            voltages = self.adc_reader.read_all_voltages() if self.adc_reader else [0, 0, 0]
+            server_connections = len(self.ble_server.connections) if self.ble_server else 0
+            
+            print_debug(f"Status - Tensões: {voltages}")
+            print_debug(f"Status - Conexões BLE: {server_connections}")
+                
+        except Exception as e:
+            print_debug(f"Erro ao obter status: {e}")
     
     def run(self):
         """Loop principal do nó"""
         print_debug("Iniciando loop principal...")
         
         last_status_time = time.time()
+        measurement_interval = 1.0  # Intervalo de medição em segundos
         
         try:
             while self.running:
@@ -167,11 +113,10 @@ class VoltmeterNode:
                 # Heartbeat
                 self.heartbeat()
                 
-                # Gerencia conexão com display
-                self.manage_display_connection()
-                
-                # Atualiza dados do servidor
-                self.update_server_data()
+                # Medições e envio de dados
+                if current_time - self.last_measurement >= measurement_interval:
+                    self.measure_and_send()
+                    self.last_measurement = current_time
                 
                 # Status info a cada 15 segundos
                 if current_time - last_status_time >= 15:
@@ -179,10 +124,10 @@ class VoltmeterNode:
                     last_status_time = current_time
                 
                 # Limpa memória periodicamente
-                if current_time % 60 < 0.1:  # A cada 60 segundos
+                if current_time % 30 < 0.1:  # A cada 30 segundos
                     gc.collect()
                 
-                # Small delay
+                # Small delay para não sobrecarregar o CPU
                 time.sleep(0.1)
                 
         except KeyboardInterrupt:
@@ -192,56 +137,43 @@ class VoltmeterNode:
             print_debug(f"Erro no loop principal: {e}")
             self.shutdown()
     
+    def measure_and_send(self):
+        """Faz medições e atualiza dados do servidor BLE"""
+        try:
+            if not self.adc_reader:
+                return
+                
+            # Lê as tensões
+            voltages = self.adc_reader.read_all_voltages()
+            
+            # Atualiza os dados no servidor BLE para clientes conectados
+            if self.ble_server:
+                self.ble_server.update_voltage_data(voltages)
+                    
+        except Exception as e:
+            print_debug(f"Erro ao medir e atualizar: {e}")
+    
     def shutdown(self):
         """Desliga o nó graciosamente"""
         print_debug("Desligando nó Voltímetro...")
         
         self.running = False
         
-        # Para o timer
+        # Para servidor BLE
         try:
-            self.reading_timer.deinit()
-        except:
-            pass
-        
-        # Desconecta do display
-        try:
-            self.ble_client.disconnect()
-        except:
-            pass
-        
-        # Para scan se ativo
-        try:
-            self.ble_client.stop_scan()
-        except:
-            pass
+            if self.ble_server:
+                # O servidor será desconectado automaticamente quando o BLE for desativado
+                pass
+        except Exception as e:
+            print_debug(f"Erro ao parar servidor BLE: {e}")
         
         # Apaga LED de status
         try:
             self.status_led.value(0)
-        except:
-            pass
+        except Exception as e:
+            print_debug(f"Erro ao apagar LED: {e}")
         
         print_debug("Nó Voltímetro desligado")
-    
-    def calibrate_channel(self, channel, known_voltage):
-        """Calibra um canal específico"""
-        print_debug(f"Calibrando canal {channel+1} com tensão conhecida {known_voltage}V")
-        self.adc_reader.auto_calibrate(channel, known_voltage)
-    
-    def set_send_interval(self, interval):
-        """Define intervalo de envio para o display"""
-        self.ble_client.set_send_interval(interval)
-    
-    def get_diagnostics(self):
-        """Retorna informações de diagnóstico"""
-        return {
-            'adc_info': self.adc_reader.get_channel_info(),
-            'client_info': self.ble_client.get_connection_info(),
-            'server_connections': self.ble_server.get_connection_count(),
-            'running': self.running,
-            'uptime': time.time()
-        }
 
 def main():
     """Função principal"""
@@ -256,9 +188,9 @@ def main():
             error_led = Pin(2, Pin.OUT)
             for _ in range(20):
                 error_led.value(1)
-                time.sleep(0.05)
+                time.sleep(0.1)
                 error_led.value(0)
-                time.sleep(0.05)
+                time.sleep(0.1)
         except:
             pass
 

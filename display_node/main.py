@@ -1,5 +1,5 @@
 """
-Nó Display - ESP32 com 3 displays de 7 segmentos
+Nó Display - ESP32 com 3 displays de 7 segmentos multiplexados (4 dígitos cada)
 Recebe dados via BLE e exibe nos displays
 """
 
@@ -19,7 +19,13 @@ from ble_utils import print_debug
 class DisplayNode:
     def __init__(self):
         """Inicializa o nó display"""
-        print_debug("Inicializando nó Display...")
+        print_debug("Inicializando nó Display com displays multiplexados...")
+        
+        # Estado do nó (inicializar antes de tudo)
+        self.running = False
+        self.last_heartbeat = time.time()
+        self.ble_server = None
+        self.display_controller = None
         
         # LED indicador de status
         self.status_led = Pin(2, Pin.OUT)
@@ -28,23 +34,26 @@ class DisplayNode:
         # Inicializa o controlador dos displays
         try:
             self.display_controller = DisplayController()
-            print_debug("Controlador de displays inicializado")
+            print_debug("Controlador de displays multiplexados inicializado")
             self.status_led.value(1)  # LED aceso = displays OK
         except Exception as e:
             print_debug(f"Erro ao inicializar displays: {e}")
+            self.status_led.value(0)
             return
         
         # Inicializa o servidor BLE
         try:
+            print_debug("Tentando inicializar servidor BLE...")
             self.ble_server = BLEDisplayServer(self.display_controller)
-            print_debug("Servidor BLE inicializado")
+            print_debug("Servidor BLE inicializado com sucesso")
+            self.running = True  # Só marca como funcionando se BLE OK
         except Exception as e:
             print_debug(f"Erro ao inicializar BLE: {e}")
+            print_debug("Continuando sem BLE - apenas displays funcionando")
+            # Continua sem BLE, apenas com displays
+            self.ble_server = None
+            self.running = True
             return
-        
-        # Estado do nó
-        self.running = True
-        self.last_heartbeat = time.time()
         
         print_debug("Nó Display inicializado com sucesso!")
         
@@ -53,25 +62,33 @@ class DisplayNode:
     
     def initial_test(self):
         """Executa teste inicial dos displays"""
-        print_debug("Executando teste inicial...")
+        if not self.display_controller:
+            print_debug("Display controller não disponível para teste")
+            return
+            
+        print_debug("Executando teste inicial dos displays multiplexados...")
         
-        # Mostra "888" em todos os displays por 2 segundos
-        self.display_controller.display_texts(['8', '8', '8'])
-        time.sleep(2)
-        
-        # Mostra contagem 0-9 em todos os displays
-        for i in range(10):
-            self.display_controller.display_texts([str(i), str(i), str(i)])
-            time.sleep(0.3)
-        
-        # Limpa os displays
-        self.display_controller.clear_all()
-        time.sleep(0.5)
-        
-        # Mostra valores padrão
-        self.display_controller.display_texts(['0.0', '0.0', '0.0'])
-        
-        print_debug("Teste inicial concluído")
+        try:
+            # Mostra "8888" em todos os displays por 3 segundos
+            self.display_controller.display_texts(['8888', '8888', '8888'])
+            time.sleep(3)
+            
+            # Mostra contagem 0-9 em todos os displays
+            for i in range(10):
+                num_str = f"{i:4d}"  # Número com 4 dígitos, alinhado à direita
+                self.display_controller.display_texts([num_str, num_str, num_str])
+                time.sleep(0.5)
+            
+            # Limpa os displays
+            self.display_controller.clear_all()
+            time.sleep(0.5)
+            
+            # Mostra valores padrão de voltagem
+            self.display_controller.display_voltages([0.00, 0.00, 0.00])
+            
+            print_debug("Teste inicial concluído")
+        except Exception as e:
+            print_debug(f"Erro no teste inicial: {e}")
     
     def heartbeat(self):
         """Pisca LED de status para indicar que o sistema está funcionando"""
@@ -82,10 +99,13 @@ class DisplayNode:
     
     def status_info(self):
         """Exibe informações de status periodicamente"""
-        connections = self.ble_server.get_connection_count()
-        current_values = self.display_controller.get_current_values()
-        
-        print_debug(f"Status - Conexões: {connections}, Displays: {current_values}")
+        try:
+            connections = self.ble_server.get_connection_count() if self.ble_server else 0
+            current_values = self.display_controller.get_current_values() if self.display_controller else ['', '', '']
+            
+            print_debug(f"Status - Conexões: {connections}, Displays: {current_values}")
+        except Exception as e:
+            print_debug(f"Erro ao obter status: {e}")
     
     def run(self):
         """Loop principal do nó"""
@@ -98,9 +118,9 @@ class DisplayNode:
                 # Heartbeat
                 self.heartbeat()
                 
-                # Status info a cada 10 segundos
+                # Status info a cada 15 segundos
                 current_time = time.time()
-                if current_time - last_status_time >= 10:
+                if current_time - last_status_time >= 15:
                     self.status_info()
                     last_status_time = current_time
                 
@@ -124,17 +144,19 @@ class DisplayNode:
         
         self.running = False
         
-        # Limpa displays
+        # Para multiplexação e limpa displays
         try:
-            self.display_controller.clear_all()
-        except:
-            pass
+            if self.display_controller:
+                self.display_controller.stop_multiplexing()
+                self.display_controller.clear_all()
+        except Exception as e:
+            print_debug(f"Erro ao parar displays: {e}")
         
         # Apaga LED de status
         try:
             self.status_led.value(0)
-        except:
-            pass
+        except Exception as e:
+            print_debug(f"Erro ao apagar LED: {e}")
         
         print_debug("Nó Display desligado")
 
@@ -149,7 +171,7 @@ def main():
         # Pisca LED rapidamente para indicar erro
         try:
             error_led = Pin(2, Pin.OUT)
-            for _ in range(10):
+            for _ in range(20):
                 error_led.value(1)
                 time.sleep(0.1)
                 error_led.value(0)

@@ -18,7 +18,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     esptool.py --chip esp32 --port $PORT erase_flash
     
     echo "2. Instalando MicroPython..."
-    esptool.py --chip esp32 --port $PORT --baud 460800 write_flash -z 0x1000 firmware/esp32-micropython.bin
+    esptool.py --chip esp32 --port $PORT --baud 921600 write_flash -z 0x1000 firmware/esp32-micropython.bin
     
     echo "✓ MicroPython instalado! Você pode agora carregar o código do projeto."
 else

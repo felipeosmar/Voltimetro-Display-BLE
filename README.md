@@ -45,14 +45,14 @@ projeto/
 
 #### Displays de 7 Segmentos (Ânodo Comum)
 **Display 1:**
-- Segmento A: GPIO 2
-- Segmento B: GPIO 4
-- Segmento C: GPIO 5
-- Segmento D: GPIO 18
-- Segmento E: GPIO 19
-- Segmento F: GPIO 21
-- Segmento G: GPIO 22
-- Ponto Decimal: GPIO 23
+- Segmento A: GPIO 13
+- Segmento B: GPIO 12
+- Segmento C: GPIO 14
+- Segmento D: GPIO 27
+- Segmento E: GPIO 26
+- Segmento F: GPIO 25
+- Segmento G: GPIO 33
+- Ponto Decimal: GPIO 32
 
 **Display 2:**
 - Segmento A: GPIO 25
